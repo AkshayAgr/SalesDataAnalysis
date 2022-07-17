@@ -1,0 +1,530 @@
+---
+title: "Marketing Strategies Review"
+output: html_document
+date: '2022-07-14'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Reading Data
+
+First 6 rows of the data table.
+```{r}
+
+raw_sales_data = as.data.frame(read.csv("data_20160405.csv"))
+head(raw_sales_data)
+
+```
+
+## Missing values
+Number of missing values in each column
+```{r pressure, echo=FALSE}
+
+colSums(is.na(raw_sales_data))
+
+```
+## Data preprocessing
+There are 14 independent variables:
+1. 3 categorical variables.
+2. 10 numerical variables.
+3. 1 date variable.
+
+### Categorical variables
+Converting account type variable to dummies.
+```{r}
+library(fastDummies)
+library(knitr)
+
+acc_type = data.frame(accType = raw_sales_data$accType)
+acc_type_dummy = dummy_cols(acc_type)
+acc_type_dummy = acc_type_dummy[, -1]
+head(acc_type_dummy)
+
+```
+
+Since there is only 1 district(3), we are going to ignore this variable. 
+```{r}
+
+print(paste("Unique district vales:", unique(raw_sales_data$district)))
+
+```
+Convert Competitive brands variable to binary.
+```{r}
+
+comp_brand = data.frame(accType = raw_sales_data$compBrand)
+comp_brand_dummy = dummy_cols(comp_brand)
+comp_brand_dummy = comp_brand_dummy[, -1]
+head(comp_brand_dummy)
+
+```
+
+### Numerical variables
+As we can see from the correlation plot account size and account target are highly correlated. We should drop one of these
+variables.
+```{r}
+library(corrplot)
+
+numerical_columns = colnames(raw_sales_data)[!colnames(raw_sales_data) %in% c("X", "accID", "accType","district", "compBrand", "sales", "qty", "month")]
+cormatrix = cor(raw_sales_data[numerical_columns] )
+corrplot(cormatrix, method = "number")
+corrplot(cormatrix, method = "circle")
+
+```
+### Standardization of numeric variables
+We need to scale the numeric variables and remove account targets
+```{r}
+
+numerical_columns_data = raw_sales_data[numerical_columns]
+scaled_numerical_columns_data = scale(numerical_columns_data)
+
+# Removing account size
+scaled_numerical_columns_data = subset(scaled_numerical_columns_data, select = -c(accTargets) )
+head(scaled_numerical_columns_data)
+
+```
+### Converting date variable into 2 variables of month and year 
+Month can have significant impact on sales if sales are seasonal. 
+Year can be useful if there are any yearly changes in sales.
+```{r}
+date_data        = as.POSIXct(raw_sales_data$month)
+data_month       = data.frame(month = format(date_data,"%B") )
+data_month_dummy = dummy_cols(data_month)
+data_month_dummy = data_month_dummy[, -1]
+
+data_year       = data.frame(year = as.numeric(format(date_data,"%Y") ) )
+data_year       = data_year - min(data_year)
+
+date_data_transformed =   cbind(data_month_dummy, data_year)
+head(date_data_transformed, 10)
+
+```
+### Checking correlation of dependent variables
+Quantity and sales have correlation of 1. It means we need to consider only 1 of these.
+```{r}
+dependent_data = raw_sales_data[, c("qty", "sales")]
+cormatrix = cor(dependent_data)
+corrplot(cormatrix, method = "number")
+corrplot(cormatrix, method = "circle")
+
+```
+
+### Distributioin of sales variable
+There are some negative sales value. Maybe the customer returned some product that was either defective or was not used by the customer. We need to change these values to 0. Any strategy cannot have negative effect on the sales.
+```{r}
+hist(raw_sales_data$sales)
+```
+
+### New variable related to sales
+We can create another dependent variable to mark whether sales have happened or not. This will be 0 if sales is 0 otherwise it will be 1.
+```{r}
+sales_happened = data.frame(sales_happened = ifelse(raw_sales_data$sales > 0, 1, 0) )
+head(sales_happened, 10)
+
+```
+### Creating dataframe of predictors.
+For categorical variables with more than 2 alternatives first column will be removed. If there are n alternatives for a categorical variable, n-1 columns are required to represent that variable.
+```{r}
+
+acc_type_variable = acc_type_dummy[, -1]
+comp_brand_variable = comp_brand_dummy[, -1]
+date_data_variable  = date_data_transformed[colnames(date_data_transformed) != "month_April"]
+
+logistic_data = cbind(acc_type_variable, comp_brand_variable, date_data_variable, scaled_numerical_columns_data, sales_happened)
+
+head(logistic_data)
+
+```
+
+### Logistic model to identify the influence of predictors on whether sale will happen or not. 
+```{r}
+library(nnet)
+
+logistic_model = multinom(formula = sales_happened ~ ., data = logistic_data)
+
+results_log = data.frame(coefficients = summary(logistic_model)$coefficients)
+
+results_log$stdev        = summary(logistic_model)$standard.errors
+results_log$zvalues      = results_log$coefficients / results_log$stdev
+results_log$pvalues      = 2 * pnorm(-abs(results_log$zvalues) )
+
+results_log = results_log[order(-abs(results_log$coefficients)),  ]
+results_log
+
+
+```
+### Confusian matrix of logistic model
+```{r}
+# Predicting on test data'
+prediction = predict(logistic_model, newdata = logistic_data)
+
+# Confusion Matrix
+cm = table(logistic_data$sales_happened, prediction)
+cm
+
+```
+
+
+### Strategy results
+Effect of strategy on probability of sales.
+```{r}
+strategy_results = results_log[c("strategy1", "strategy2", "strategy3"),  ]
+strategy_results
+```
+### Effect of new entrant on probability sales
+Effect of new entrant on whether sale will happen or not has very high p-value. It means according to the model new entrant does not have significant effect on whether sale will happen or not. 
+```{r}
+
+new_entrant_results = results_log[c("comp_brand_variable"),  ]
+new_entrant_results
+
+```
+
+Decrease in probability of sales after entry of new competitor.
+```{r}
+new_entrant_data = logistic_data[logistic_data$comp_brand_variable == 1, ]
+
+new_entrant_prediction = predict(logistic_model, newdata = new_entrant_data, type = "prob")
+
+without_new_entrant_data = new_entrant_data
+without_new_entrant_data$comp_brand_variable = 0
+
+without_new_entrant_prediction = predict(logistic_model, newdata = without_new_entrant_data, type = "prob")
+
+change_in_prob = (mean(new_entrant_prediction) - mean(without_new_entrant_prediction)) / mean(without_new_entrant_prediction) * 100
+
+change_in_prob
+
+data.frame(Condition = c("Without new competitor", "With new competitor"), 
+           `Average Probability` = c(mean(without_new_entrant_prediction), mean(new_entrant_prediction) )  )
+
+```
+
+
+### Creating data for linear regression on cases where sale has happened
+```{r}
+
+log_sales = data.frame(sales = raw_sales_data$sales[logistic_model$fitted.values > 0.5] )
+
+
+linear_data = cbind(logistic_data[logistic_model$fitted.values > 0.5, ], log_sales)
+linear_data$sales[linear_data$sales < 0] = 0 
+linear_data = linear_data[, colnames(linear_data) != "sales_happened"]
+head(linear_data)
+
+
+```
+
+### Linear regression model
+```{r}
+
+linear_model = lm(formula = sales ~ ., data = linear_data) 
+
+results = data.frame(coefficients = summary(linear_model)$coefficients)
+results = results[order(-abs(results$coefficients.Estimate)),  ]
+results
+
+```
+### Linear model tests
+Linear model passes all the normality tests with pvalues less than 0.05.
+```{r}
+library(olsrr)
+
+ols_test_normality(linear_model)
+
+```
+
+### Strategy results
+```{r}
+strategy_results = results[c("strategy1", "strategy2", "strategy3"), ]
+strategy_results
+```
+
+### Effect of new entrant on sales
+According to model new entrant has negative effect on sales.
+```{r}
+
+new_entrant_results = results[c("comp_brand_variable"),  ]
+new_entrant_results
+
+```
+
+Decrease in sale after entry of new competitor.
+```{r}
+new_entrant_data_linear = linear_data[linear_data$comp_brand_variable == 1, ]
+
+new_entrant_prediction_sales = predict(linear_model, newdata = new_entrant_data_linear, type = "response")
+
+without_new_entrant_data_linear = new_entrant_data_linear
+without_new_entrant_data_linear$comp_brand_variable = 0
+
+without_new_entrant_prediction_sales = predict(linear_model, newdata = without_new_entrant_data_linear, type = "response")
+
+change_in_sales = (mean(new_entrant_prediction_sales) - mean(without_new_entrant_prediction_sales)) / mean(without_new_entrant_prediction_sales) * 100
+
+change_in_sales
+
+data.frame(Condition = c("Without new competitor", "With new competitor"), 
+           `Average Sales` = c(mean(without_new_entrant_prediction_sales), mean(new_entrant_prediction_sales) )  )
+
+
+```
+
+### Increase in sales by increasing expenditure on strategy 1 by 1% 
+```{r}
+
+scaled_increased_variable = function(variable) {
+    mean_variable = mean(variable)
+    sd_variable   = sd(variable)
+    
+    increased_variable        = variable * 1.01
+    scaled_increased_variable = (increased_variable - mean_variable) / sd_variable
+    
+    return(scaled_increased_variable) 
+}
+
+mean_sales_predicted = mean(linear_model$fitted.values)
+
+# Increase in sales by increasing expenditure in strategy 1 by 1%
+scaled_increased_s1 = scaled_increased_variable(numerical_columns_data$strategy1)
+
+linear_data_s1_increased = linear_data
+linear_data_s1_increased$strategy1 = scaled_increased_s1[logistic_model$fitted.values > 0.5]
+
+sales_predicted_increased_s1 = predict(object = linear_model, newdata = linear_data_s1_increased)
+mean_sales_predicted_increased_s1 =  mean(sales_predicted_increased_s1)
+
+increased_sales_increased_s1 = (mean_sales_predicted_increased_s1 - mean_sales_predicted) / mean_sales_predicted
+
+# Increase in sales by increasing expenditure in strategy 2 by 1%
+scaled_increased_s2 = scaled_increased_variable(numerical_columns_data$strategy2)
+
+linear_data_s2_increased = linear_data
+linear_data_s2_increased$strategy2 = scaled_increased_s2[logistic_model$fitted.values > 0.5]
+
+sales_predicted_increased_s2 = predict(object = linear_model, newdata = linear_data_s2_increased)
+mean_sales_predicted_increased_s2 =  mean(sales_predicted_increased_s2)
+
+increased_sales_increased_s2 = (mean_sales_predicted_increased_s2 - mean_sales_predicted) / mean_sales_predicted
+
+# Increase in sales by increasing expenditure in strategy 3 by 1%
+scaled_increased_s3 = scaled_increased_variable(numerical_columns_data$strategy3)
+
+linear_data_s3_increased = linear_data
+linear_data_s3_increased$strategy3 = scaled_increased_s3[logistic_model$fitted.values > 0.5]
+
+sales_predicted_increased_s3 = predict(object = linear_model, newdata = linear_data_s3_increased)
+mean_sales_predicted_increased_s3 =  mean(sales_predicted_increased_s3)
+
+increased_sales_increased_s3 = (mean_sales_predicted_increased_s3 - mean_sales_predicted) / mean_sales_predicted
+
+
+
+
+sale_increase_by_strategy = data.frame(strategy = c("Strategy 1", "Strategy 2", "Strategy 3"),
+                                  `Increase in sales (%)` = c(increased_sales_increased_s1, increased_sales_increased_s2, 
+                                                          increased_sales_increased_s3) *100, check.names = FALSE  )
+sale_increase_by_strategy
+
+
+```
+### Increase in probability of sales by increasing expenditure of each strategy by 1% (one at a time)
+```{r}
+mean_prob_predicted       = mean(logistic_model$fitted.values)
+
+# Increase in probability of sales by increasing expenditure in strategy 1 by 1%
+logistic_data_s1_increased = logistic_data
+logistic_data_s1_increased$strategy1 = scaled_increased_s1
+
+prob_predicted_increased_s1 = predict(object = logistic_model, newdata = logistic_data_s1_increased, type = "prob")
+mean_prob_predicted_increased_s1 =  mean(prob_predicted_increased_s1)
+
+increased_prob_increased_s1 = (mean_prob_predicted_increased_s1 - mean_prob_predicted) / mean_prob_predicted
+
+# Increase in probability of sales by increasing expenditure in strategy 2 by 1%
+logistic_data_s2_increased = logistic_data
+logistic_data_s2_increased$strategy2 = scaled_increased_s2
+
+prob_predicted_increased_s2 = predict(object = logistic_model, newdata = logistic_data_s2_increased, type = "prob")
+mean_prob_predicted_increased_s2 =  mean(prob_predicted_increased_s2)
+
+increased_prob_increased_s2 = (mean_prob_predicted_increased_s2 - mean_prob_predicted) / mean_prob_predicted
+
+# Increase in probability of sales by increasing expenditure in strategy 2 by 1%
+logistic_data_s3_increased = logistic_data
+logistic_data_s3_increased$strategy3 = scaled_increased_s3
+
+prob_predicted_increased_s3 = predict(object = logistic_model, newdata = logistic_data_s3_increased, type = "prob")
+mean_prob_predicted_increased_s3 =  mean(prob_predicted_increased_s3)
+
+increased_prob_increased_s3 = (mean_prob_predicted_increased_s3 - mean_prob_predicted) / mean_prob_predicted
+
+prob_increase_by_strategy = data.frame(strategy = c("Strategy 1", "Strategy 2", "Strategy 3"),
+                                  `Increase in probability of sale (%)` = c(increased_prob_increased_s1,
+                                                                             increased_prob_increased_s2, 
+                                                                             increased_prob_increased_s3) *100, 
+                                  check.names = FALSE  )
+prob_increase_by_strategy
+
+```
+
+### Regression of each account ID
+```{r}
+
+account_ids = unique(raw_sales_data$accID)
+
+new_d = cbind(logistic_data, sales = raw_sales_data$sales)
+new_d = new_d[, colnames(new_d) != "sales_happened"]
+new_d$sales[new_d$sales < 0] = 0 
+
+coeff_matrix = matrix(NA, nrow = length(account_ids), ncol = 3)
+rownames(coeff_matrix) = account_ids
+colnames(coeff_matrix) = c("1 coefficient", "2 coefficient", "3 coefficient")
+
+pvalue_matrix = matrix(NA, nrow = length(account_ids), ncol = 3)
+rownames(pvalue_matrix) = account_ids
+colnames(pvalue_matrix) = c("1 p-value", "2 p-value", "3 p-value")
+
+
+for(a in 1:length(account_ids) ) {
+  ac_data = new_d[raw_sales_data$accID == as.character(account_ids[a]), ]
+  drop = NULL
+  for (c in 1:ncol(ac_data) ) {
+    if (length(unique(ac_data[, c] ) ) == 1 )
+      drop = c(drop, c)
+  }
+  ac_data = ac_data[, -drop]
+  
+  ac_model = lm(formula = sales ~ ., data = ac_data) 
+
+  m_summary = summary(ac_model)$coefficients
+  
+  if ("strategy1" %in% rownames(m_summary) ) {
+    coeff_matrix[a, 1 ] = c(m_summary["strategy1", 1] )
+    pvalue_matrix[a, 1 ] = c(m_summary["strategy1", 4] )
+  }
+  if ("strategy2" %in% rownames(m_summary) ) {
+    coeff_matrix[a, 2 ] = c(m_summary["strategy2", 1] )
+    pvalue_matrix[a, 2 ] = c(m_summary["strategy2", 4] )
+  }
+  if ("strategy3" %in% rownames(m_summary) ) {
+    coeff_matrix[a, 3 ] = c(m_summary["strategy3", 1] )
+    pvalue_matrix[a, 3 ] = c(m_summary["strategy3", 4] )
+  }
+
+}
+
+head(coeff_matrix)
+head(pvalue_matrix)
+```
+
+### Best strategy for each client
+```{r}
+best_strategy = coeff_matrix
+#best_strategy[is.na(best_strategy)] = -Inf
+
+bs = as.matrix(apply(best_strategy, 1, max, na.rm = TRUE) )
+
+bs_result = NULL
+
+for (r in 1:nrow(best_strategy) ) {
+  bs_value  = max(best_strategy[r, ], na.rm = TRUE )
+  bs_result = c(bs_result, match(bs_value, best_strategy[r, ] ) )
+  
+}
+
+bs_result_data_frame = data.frame(accID = rownames(best_strategy), `Best strategy` = paste("Strategy", bs_result), check.names = FALSE )
+
+bs_result_data_frame
+```
+
+### Distribution of best strategy
+```{r}
+table(bs_result_data_frame$`Best strategy`)
+
+```
+### Characteristics of accounts that are influenced most by strategy 1
+```{r}
+
+s_accounts = function(strategy) {
+  
+  s1_accounts = bs_result_data_frame[bs_result_data_frame$`Best strategy` == strategy, ]
+  
+  s1_accounts$acc_type = NA
+  s1_accounts$acc_size = NA
+  s1_accounts$avg_sales = NA
+  
+  for (r in 1:nrow(s1_accounts) ) {
+  
+  s1_accounts$acc_type[r] = unique(raw_sales_data$accType[raw_sales_data$accID == s1_accounts$accID[r] ])
+  s1_accounts$acc_size[r] = mean(raw_sales_data$accSize[raw_sales_data$accID == s1_accounts$accID[r] ])
+  s1_accounts$avg_sales[r] = mean(raw_sales_data$sales[raw_sales_data$accID == s1_accounts$accID[r] ])
+  }
+  
+  return(s1_accounts)
+  
+}
+
+s1_accounts = s_accounts("Strategy 1")
+s1_accounts
+
+```
+
+### Characteristics of accounts that are influenced most by strategy 2
+```{r}
+s2_accounts = s_accounts("Strategy 2")
+s2_accounts
+```
+
+### Characteristics of accounts that are influenced most by strategy 3
+```{r}
+s3_accounts = s_accounts("Strategy 3")
+s3_accounts
+```
+
+### Characteristics of accounts that are influenced most by strategy NA
+```{r}
+s4_accounts = s_accounts("Strategy NA")
+s4_accounts
+```
+
+### Matrix of best strategy
+```{r}
+
+acc_type_s1 = table(s1_accounts$acc_type)
+acc_type_s2 = table(s2_accounts$acc_type)
+acc_type_s3 = table(s3_accounts$acc_type)
+acc_type_s4 = table(s4_accounts$acc_type)
+
+acc_matrix = matrix(0, nrow = 4, ncol = 4)
+colnames(acc_matrix) = c("Hospital", "Pharmacy", "Polyclinic", "Private Clinic")
+rownames(acc_matrix) = c("Strategy 1", "Strategy 2", "Strategy 3", "Strategy NA")
+
+acc_matrix["Strategy 1", ]  = acc_type_s1[c("Hospital", "Pharmacy", "Polyclinic", "Private Clinic")]
+acc_matrix["Strategy 2", ]  = acc_type_s2[c("Hospital", "Pharmacy", "Polyclinic", "Private Clinic")]
+acc_matrix["Strategy 3", ]  = acc_type_s3[c("Hospital", "Pharmacy", "Polyclinic", "Private Clinic")]
+acc_matrix["Strategy NA", ] = acc_type_s4[c("Hospital", "Pharmacy", "Polyclinic", "Private Clinic")]
+  
+acc_matrix[is.na(acc_matrix) ] = 0
+acc_matrix  
+
+```
+
+### Matrix of percentage of best strategy
+```{r}
+acc_matrix_percent = acc_matrix
+
+for (c in 1:ncol(acc_matrix) ) {
+  acc_matrix_percent[, c] = acc_matrix[, c] / sum(acc_matrix[, c] )
+}
+acc_matrix_percent
+
+```
+```{r}
+library("formattable")
+
+percent(acc_matrix_percent)
+
+```
+
